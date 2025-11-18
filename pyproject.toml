@@ -22,10 +22,10 @@ license = {file = "LICENSE"}
 
 
 [project.urls]
-Repository = "https://github.com/comfyanonymous/ComfyUI"
+Repository = "https://github.com/GuardSkill/ComfyUI-VideoOverlayFFmpeg"
 #  Used by Comfy Registry https://registry.comfy.org
-Documentation = "https://github.com/comfyanonymous/ComfyUI/wiki"
-"Bug Tracker" = "https://github.com/comfyanonymous/ComfyUI/issues"
+Documentation = "https://github.com/GuardSkill/ComfyUI-VideoOverlayFFmpeg/wiki"
+"Bug Tracker" = "https://github.com/GuardSkill/ComfyUI-VideoOverlayFFmpeg/issues"
 
 [tool.comfy]
 PublisherId = "guardskill"
