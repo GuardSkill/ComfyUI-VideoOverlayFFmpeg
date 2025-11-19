@@ -63,11 +63,25 @@ class VideoOverlayNode:
                     "max": 500,
                     "step": 1,
                 }),
-                "h_size_ratio": ("FLOAT", {
+                "size_ratio": ("FLOAT", {
                     "default": 0.25,
                     "min": 0.1,
                     "max": 1.0,
                     "step": 0.05,
+                    "display": "slider",
+                }),
+                "big_video_audio_volume": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 2.0,
+                    "step": 0.1,
+                    "display": "slider",
+                }),
+                "small_video_audio_volume": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 2.0,
+                    "step": 0.1,
                     "display": "slider",
                 }),
             }
@@ -105,7 +119,8 @@ class VideoOverlayNode:
         return positions.get(position, positions["right_bottom"])
     
     def overlay_videos(self, big_video_path, small_video_path, mask_video_path, 
-                      opacity, position, margin_x, margin_y, h_size_ratio):
+                      opacity, position, margin_x, margin_y, size_ratio,
+                      big_video_audio_volume, small_video_audio_volume):
         """执行视频合成"""
         
         # 检查文件是否存在
@@ -122,11 +137,12 @@ class VideoOverlayNode:
         print(f"[VideoOverlay] 小视频: {small_w}x{small_h}, {small_dur:.2f}秒")
         
         # 计算小视频目标尺寸
-        target_height = int(big_h * h_size_ratio)
+        target_height = int(big_h * size_ratio)
         target_width = int(target_height * small_w / small_h)
         
         print(f"[VideoOverlay] 小视频目标尺寸: {target_width}x{target_height}")
         print(f"[VideoOverlay] 透明度: {opacity}, 位置: {position}")
+        print(f"[VideoOverlay] 音频混合 - 大视频: {big_video_audio_volume}, 小视频: {small_video_audio_volume}")
         
         # 计算overlay位置
         overlay_x, overlay_y = self.get_overlay_position(
@@ -207,7 +223,28 @@ class VideoOverlayNode:
                     format='auto'
                 )
                 
-                audio_out = small_input.audio
+                # 音频处理：混合两个音频
+                # 大视频音频保持原长度
+                big_audio = ffmpeg.filter(big_input.audio, 'volume', big_video_audio_volume)
+                
+                # 小视频音频需要延长（冻结静音）
+                small_audio = ffmpeg.filter(small_input.audio, 'volume', small_video_audio_volume)
+                small_audio_padded = ffmpeg.filter(
+                    small_audio,
+                    'apad',
+                    pad_dur=pad_dur
+                )
+                
+                # 混合音频
+                if big_video_audio_volume > 0 and small_video_audio_volume > 0:
+                    audio_out = ffmpeg.filter([big_audio, small_audio_padded], 'amix', inputs=2, duration='longest')
+                elif big_video_audio_volume > 0:
+                    audio_out = big_audio
+                elif small_video_audio_volume > 0:
+                    audio_out = small_audio_padded
+                else:
+                    # 两个音量都是0，使用静音
+                    audio_out = ffmpeg.filter(big_audio, 'volume', 0)
                 
             else:
                 print(f"[VideoOverlay] 小视频更长，循环大视频")
@@ -263,7 +300,29 @@ class VideoOverlayNode:
                     format='auto'
                 )
                 
-                audio_out = small_input.audio
+                # 音频处理：混合两个音频
+                # 大视频音频需要循环
+                big_audio_loop = ffmpeg.filter(
+                    big_input.audio,
+                    'aloop',
+                    loop=-1,
+                    size=2e9  # 足够大的采样数
+                )
+                big_audio = ffmpeg.filter(big_audio_loop, 'volume', big_video_audio_volume)
+                
+                # 小视频音频保持原样
+                small_audio = ffmpeg.filter(small_input.audio, 'volume', small_video_audio_volume)
+                
+                # 混合音频
+                if big_video_audio_volume > 0 and small_video_audio_volume > 0:
+                    audio_out = ffmpeg.filter([big_audio, small_audio], 'amix', inputs=2, duration='longest')
+                elif big_video_audio_volume > 0:
+                    audio_out = big_audio
+                elif small_video_audio_volume > 0:
+                    audio_out = small_audio
+                else:
+                    # 两个音量都是0，使用静音
+                    audio_out = ffmpeg.filter(small_audio, 'volume', 0)
             
             # 输出
             print(f"[VideoOverlay] 开始合成视频...")
