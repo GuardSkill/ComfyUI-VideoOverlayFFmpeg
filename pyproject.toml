@@ -1,6 +1,6 @@
 [project]
-name = "VideoOverlayFFmpeg[画中画]"
-description = ""
+name = "VideoOverlayFFmpeg"
+description = "视频混剪辑 画中画"
 version = "1.0.0"
 license = {file = "LICENSE"} 
 # classifiers = [
