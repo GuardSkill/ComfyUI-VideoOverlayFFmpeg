@@ -28,6 +28,8 @@ app.registerExtension({
 
             console.log("[VideoOverlay] Node created, adding preview widget");
 
+            const previewNode = this;
+
             // 创建预览容器
             const element = document.createElement("div");
             element.style.width = "100%";
@@ -37,6 +39,22 @@ app.registerExtension({
                 serialize: false,
                 hideOnZoom: false,
             });
+
+            // 实现computeSize方法 - 根据视频宽高比自动调整高度
+            previewWidget.computeSize = function(width) {
+                if (this.aspectRatio && !element.hidden) {
+                    // 根据节点宽度和视频宽高比计算高度
+                    // 减去20是为了留出边距，加10是为了info区域
+                    let height = (previewNode.size[0] - 20) / this.aspectRatio + 60;
+                    if (!(height > 0)) {
+                        height = 0;
+                    }
+                    this.computedHeight = height;
+                    return [width, height];
+                }
+                // 没有加载视频时，widget不占空间
+                return [width, -4];
+            };
 
             // 保存引用
             this.videoPreviewWidget = previewWidget;
@@ -94,17 +112,88 @@ app.registerExtension({
             // 创建视频元素
             const videoEl = document.createElement("video");
             videoEl.src = videoUrl;
-            videoEl.controls = true;
+            videoEl.controls = false;  // 隐藏默认controls，使用自定义进度条
             videoEl.loop = true;
             videoEl.muted = true;  // 默认静音
             videoEl.preload = "metadata";  // 预加载元数据
             videoEl.style.width = "100%";
             videoEl.style.height = "auto";
-            videoEl.style.maxHeight = "400px";
             videoEl.style.objectFit = "contain";
             videoEl.style.backgroundColor = "#000";
             videoEl.style.display = "block";
-            videoEl.style.borderRadius = "4px";
+            videoEl.style.borderRadius = "4px 4px 0 0";  // 只有顶部圆角
+
+            // 监听视频元数据加载 - 自动调整节点大小
+            videoEl.addEventListener("loadedmetadata", () => {
+                console.log("[VideoOverlay] Video metadata loaded:", videoEl.videoWidth, "x", videoEl.videoHeight);
+
+                // 计算宽高比
+                this.videoPreviewWidget.aspectRatio = videoEl.videoWidth / videoEl.videoHeight;
+
+                // 调整节点大小以适应视频
+                this.setSize([
+                    Math.max(this.size[0], 350),  // 最小宽度350
+                    this.computeSize()[1]
+                ]);
+
+                // 标记canvas需要重绘
+                if (this.graph) {
+                    this.graph.setDirtyCanvas(true, true);
+                }
+            });
+
+            // 监听视频加载错误
+            videoEl.addEventListener("error", () => {
+                console.error("[VideoOverlay] Video loading failed");
+                // 隐藏预览widget
+                this.videoPreviewElement.hidden = true;
+                this.setSize([this.size[0], this.computeSize()[1]]);
+                if (this.graph) {
+                    this.graph.setDirtyCanvas(true, true);
+                }
+            });
+
+            // 创建自定义进度条（简洁样式）
+            const progressContainer = document.createElement("div");
+            progressContainer.style.width = "100%";
+            progressContainer.style.height = "3px";
+            progressContainer.style.backgroundColor = "rgba(255,255,255,0.2)";
+            progressContainer.style.cursor = "pointer";
+            progressContainer.style.position = "relative";
+            progressContainer.style.transition = "height 0.2s ease";
+
+            const progressBar = document.createElement("div");
+            progressBar.style.width = "0%";
+            progressBar.style.height = "100%";
+            progressBar.style.backgroundColor = "#4a9eff";
+            progressBar.style.transition = "width 0.1s linear";
+
+            progressContainer.appendChild(progressBar);
+
+            // 鼠标悬停在进度条上时变粗
+            progressContainer.addEventListener("mouseenter", () => {
+                progressContainer.style.height = "5px";
+            });
+
+            progressContainer.addEventListener("mouseleave", () => {
+                progressContainer.style.height = "3px";
+            });
+
+            // 更新进度条
+            videoEl.addEventListener("timeupdate", () => {
+                if (videoEl.duration) {
+                    const progress = (videoEl.currentTime / videoEl.duration) * 100;
+                    progressBar.style.width = progress + "%";
+                }
+            });
+
+            // 点击进度条跳转
+            progressContainer.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const rect = progressContainer.getBoundingClientRect();
+                const pos = (e.clientX - rect.left) / rect.width;
+                videoEl.currentTime = pos * videoEl.duration;
+            });
 
             // 鼠标悬停播放功能（参考 VideoHelperSuite）
             videoEl.addEventListener("mouseenter", () => {
@@ -126,7 +215,7 @@ app.registerExtension({
                 videoEl.muted = true;
             });
 
-            // 点击切换播放/暂停
+            // 点击视频切换播放/暂停
             videoEl.addEventListener("click", (e) => {
                 e.stopPropagation();
                 if (videoEl.paused) {
@@ -179,21 +268,16 @@ app.registerExtension({
                 <span style="color: #888;">鼠标悬停播放 | 点击暂停/继续</span>
             `;
 
-            // 组装 DOM - 顺序：视频、加载提示、文件信息
+            // 组装 DOM - 顺序：视频、进度条、加载提示、文件信息
             container.appendChild(videoEl);
+            container.appendChild(progressContainer);
             container.appendChild(loadingDiv);
             container.appendChild(infoDiv);
 
             // 保存视频元素引用
             this.videoElement = videoEl;
 
-            // 自动调整节点大小
-            this.setSize([
-                Math.max(this.size[0], 350),
-                this.computeSize()[1]
-            ]);
-
-            console.log(`[VideoOverlay] Video preview loaded: ${videoFilename}`);
+            console.log(`[VideoOverlay] Video preview updated: ${videoFilename}`);
         };
 
         /**
