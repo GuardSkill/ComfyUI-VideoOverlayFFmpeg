@@ -56,7 +56,33 @@ def get_available_fonts():
 
 class VideoOverlayNode:
     """视频画中画合成节点"""
-    
+
+    def apply_audio_speed(self, audio, speed):
+        """
+        应用音频调速
+        atempo滤镜范围是0.5-2.0，超出范围需要链式调用
+        """
+        if speed == 1.0:
+            return audio
+
+        # atempo滤镜的有效范围是0.5-2.0
+        # 如果速度超出范围，需要多次应用
+        result = audio
+        remaining_speed = speed
+
+        while remaining_speed > 2.0:
+            result = ffmpeg.filter(result, 'atempo', 2.0)
+            remaining_speed /= 2.0
+
+        while remaining_speed < 0.5:
+            result = ffmpeg.filter(result, 'atempo', 0.5)
+            remaining_speed /= 0.5
+
+        if remaining_speed != 1.0:
+            result = ffmpeg.filter(result, 'atempo', remaining_speed)
+
+        return result
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -116,6 +142,20 @@ class VideoOverlayNode:
                     "step": 0.1,
                     "display": "slider",
                 }),
+                "big_video_speed": ("FLOAT", {
+                    "default": 1.8,
+                    "min": 0.25,
+                    "max": 4.0,
+                    "step": 0.1,
+                    "display": "slider",
+                }),
+                "small_video_speed": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.25,
+                    "max": 4.0,
+                    "step": 0.1,
+                    "display": "slider",
+                }),
             }
         }
     
@@ -150,9 +190,10 @@ class VideoOverlayNode:
         }
         return positions.get(position, positions["right_bottom"])
     
-    def overlay_videos(self, big_video_path, small_video_path, mask_video_path, 
+    def overlay_videos(self, big_video_path, small_video_path, mask_video_path,
                       opacity, position, margin_x, margin_y, size_ratio,
-                      big_video_audio_volume, small_video_audio_volume):
+                      big_video_audio_volume, small_video_audio_volume,
+                      big_video_speed, small_video_speed):
         """执行视频合成"""
         
         # 检查文件是否存在
@@ -175,41 +216,63 @@ class VideoOverlayNode:
         print(f"[VideoOverlay] 小视频目标尺寸: {target_width}x{target_height}")
         print(f"[VideoOverlay] 透明度: {opacity}, 位置: {position}")
         print(f"[VideoOverlay] 音频混合 - 大视频: {big_video_audio_volume}, 小视频: {small_video_audio_volume}")
-        
+        print(f"[VideoOverlay] 视频速度 - 大视频: {big_video_speed}x, 小视频: {small_video_speed}x")
+
+        # 计算调速后的实际时长
+        big_dur_adjusted = big_dur / big_video_speed
+        small_dur_adjusted = small_dur / small_video_speed
+
+        print(f"[VideoOverlay] 调速后时长 - 大视频: {big_dur_adjusted:.2f}秒, 小视频: {small_dur_adjusted:.2f}秒")
+
         # 计算overlay位置
         overlay_x, overlay_y = self.get_overlay_position(
             position, big_w, big_h, target_width, target_height, margin_x, margin_y
         )
-        
+
         # 生成输出文件路径
         output_dir = folder_paths.get_output_directory()
         unique_id = str(uuid.uuid4())[:8]
         output_filename = f"overlay_{unique_id}.mp4"
         output_path = os.path.join(output_dir, output_filename)
-        
+
         # 加载输入视频
         big_input = ffmpeg.input(big_video_path)
         small_input = ffmpeg.input(small_video_path)
         mask_input = ffmpeg.input(mask_video_path)
-        
-        max_dur = max(big_dur, small_dur)
+
+        max_dur = max(big_dur_adjusted, small_dur_adjusted)
         
         try:
-            if big_dur > small_dur:
+            if big_dur_adjusted > small_dur_adjusted:
                 print(f"[VideoOverlay] 大视频更长，冻结小视频最后一帧")
-                pad_dur = big_dur - small_dur
-                
+                pad_dur = big_dur_adjusted - small_dur_adjusted
+
+                # 应用调速到大视频
+                big_video = big_input.video
+                if big_video_speed != 1.0:
+                    big_video = ffmpeg.filter(big_video, 'setpts', f'{1.0/big_video_speed}*PTS')
+
+                # 应用调速到小视频
+                small_video = small_input.video
+                if small_video_speed != 1.0:
+                    small_video = ffmpeg.filter(small_video, 'setpts', f'{1.0/small_video_speed}*PTS')
+
                 # 延长小视频
                 small_padded = ffmpeg.filter(
-                    small_input.video,
+                    small_video,
                     'tpad',
                     stop_mode='clone',
                     stop_duration=pad_dur
                 )
-                
+
+                # 应用调速到mask（与小视频同步）
+                mask_video = mask_input.video
+                if small_video_speed != 1.0:
+                    mask_video = ffmpeg.filter(mask_video, 'setpts', f'{1.0/small_video_speed}*PTS')
+
                 # 延长mask
                 mask_padded = ffmpeg.filter(
-                    mask_input.video,
+                    mask_video,
                     'tpad',
                     stop_mode='clone',
                     stop_duration=pad_dur
@@ -245,10 +308,10 @@ class VideoOverlayNode:
                     [small_scaled, mask_scaled],
                     'alphamerge'
                 )
-                
+
                 # overlay
                 video_out = ffmpeg.overlay(
-                    big_input.video,
+                    big_video,
                     small_masked,
                     x=overlay_x,
                     y=overlay_y,
@@ -256,11 +319,17 @@ class VideoOverlayNode:
                 )
                 
                 # 音频处理：混合两个音频
-                # 大视频音频保持原长度
-                big_audio = ffmpeg.filter(big_input.audio, 'volume', big_video_audio_volume)
-                
-                # 小视频音频需要延长（冻结静音）
-                small_audio = ffmpeg.filter(small_input.audio, 'volume', small_video_audio_volume)
+                # 大视频音频调速
+                big_audio = big_input.audio
+                if big_video_speed != 1.0:
+                    big_audio = self.apply_audio_speed(big_audio, big_video_speed)
+                big_audio = ffmpeg.filter(big_audio, 'volume', big_video_audio_volume)
+
+                # 小视频音频调速后需要延长（冻结静音）
+                small_audio = small_input.audio
+                if small_video_speed != 1.0:
+                    small_audio = self.apply_audio_speed(small_audio, small_video_speed)
+                small_audio = ffmpeg.filter(small_audio, 'volume', small_video_audio_volume)
                 small_audio_padded = ffmpeg.filter(
                     small_audio,
                     'apad',
@@ -280,22 +349,37 @@ class VideoOverlayNode:
                 
             else:
                 print(f"[VideoOverlay] 小视频更长，循环大视频")
-                
+
+                # 应用调速到大视频
+                big_video = big_input.video
+                if big_video_speed != 1.0:
+                    big_video = ffmpeg.filter(big_video, 'setpts', f'{1.0/big_video_speed}*PTS')
+
                 # 循环大视频
                 big_loop = ffmpeg.filter(
-                    big_input.video,
+                    big_video,
                     'loop',
                     loop=-1,
                     size=32767,
                     start=0
                 )
-                
+
+                # 应用调速到小视频
+                small_video = small_input.video
+                if small_video_speed != 1.0:
+                    small_video = ffmpeg.filter(small_video, 'setpts', f'{1.0/small_video_speed}*PTS')
+
+                # 应用调速到mask（与小视频同步）
+                mask_video = mask_input.video
+                if small_video_speed != 1.0:
+                    mask_video = ffmpeg.filter(mask_video, 'setpts', f'{1.0/small_video_speed}*PTS')
+
                 # 处理mask
-                mask_gray = ffmpeg.filter(mask_input.video, 'format', 'gray')
-                
+                mask_gray = ffmpeg.filter(mask_video, 'format', 'gray')
+
                 # 缩放
                 small_scaled = ffmpeg.filter(
-                    small_input.video,
+                    small_video,
                     'scale',
                     target_width,
                     target_height,
@@ -333,17 +417,23 @@ class VideoOverlayNode:
                 )
                 
                 # 音频处理：混合两个音频
-                # 大视频音频需要循环
+                # 大视频音频调速后需要循环
+                big_audio = big_input.audio
+                if big_video_speed != 1.0:
+                    big_audio = self.apply_audio_speed(big_audio, big_video_speed)
                 big_audio_loop = ffmpeg.filter(
-                    big_input.audio,
+                    big_audio,
                     'aloop',
                     loop=-1,
                     size=2e9  # 足够大的采样数
                 )
                 big_audio = ffmpeg.filter(big_audio_loop, 'volume', big_video_audio_volume)
-                
-                # 小视频音频保持原样
-                small_audio = ffmpeg.filter(small_input.audio, 'volume', small_video_audio_volume)
+
+                # 小视频音频调速
+                small_audio = small_input.audio
+                if small_video_speed != 1.0:
+                    small_audio = self.apply_audio_speed(small_audio, small_video_speed)
+                small_audio = ffmpeg.filter(small_audio, 'volume', small_video_audio_volume)
                 
                 # 混合音频
                 if big_video_audio_volume > 0 and small_video_audio_volume > 0:
@@ -389,6 +479,32 @@ class VideoOverlayNode:
 
 class VideoOverlayWithSubtitlesNode:
     """视频画中画合成节点（带字幕）"""
+
+    def apply_audio_speed(self, audio, speed):
+        """
+        应用音频调速
+        atempo滤镜范围是0.5-2.0，超出范围需要链式调用
+        """
+        if speed == 1.0:
+            return audio
+
+        # atempo滤镜的有效范围是0.5-2.0
+        # 如果速度超出范围，需要多次应用
+        result = audio
+        remaining_speed = speed
+
+        while remaining_speed > 2.0:
+            result = ffmpeg.filter(result, 'atempo', 2.0)
+            remaining_speed /= 2.0
+
+        while remaining_speed < 0.5:
+            result = ffmpeg.filter(result, 'atempo', 0.5)
+            remaining_speed /= 0.5
+
+        if remaining_speed != 1.0:
+            result = ffmpeg.filter(result, 'atempo', remaining_speed)
+
+        return result
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -459,6 +575,20 @@ class VideoOverlayWithSubtitlesNode:
                     "max": 120.0,
                     "step": 1.0,
                     "display": "number"
+                }),
+                "big_video_speed": ("FLOAT", {
+                    "default": 1.8,
+                    "min": 0.25,
+                    "max": 4.0,
+                    "step": 0.1,
+                    "display": "slider",
+                }),
+                "small_video_speed": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.25,
+                    "max": 4.0,
+                    "step": 0.1,
+                    "display": "slider",
                 }),
             },
             "optional": {
@@ -667,6 +797,7 @@ class VideoOverlayWithSubtitlesNode:
     def overlay_videos_with_subtitles(self, big_video_path, small_video_path, mask_video_path,
                                      opacity, position, margin_x, margin_y, size_ratio,
                                      big_video_audio_volume, small_video_audio_volume,
+                                     big_video_speed, small_video_speed,
                                      video_fps,
                                      alignment=None,
                                      font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -705,6 +836,13 @@ class VideoOverlayWithSubtitlesNode:
         print(f"[VideoOverlay] 小视频目标尺寸: {target_width}x{target_height}")
         print(f"[VideoOverlay] 透明度: {opacity}, 位置: {position}")
         print(f"[VideoOverlay] 音频混合 - 大视频: {big_video_audio_volume}, 小视频: {small_video_audio_volume}")
+        print(f"[VideoOverlay] 视频速度 - 大视频: {big_video_speed}x, 小视频: {small_video_speed}x")
+
+        # 计算调速后的实际时长
+        big_dur_adjusted = big_dur / big_video_speed
+        small_dur_adjusted = small_dur / small_video_speed
+
+        print(f"[VideoOverlay] 调速后时长 - 大视频: {big_dur_adjusted:.2f}秒, 小视频: {small_dur_adjusted:.2f}秒")
 
         # 解析字幕
         alignment_list = self.parse_alignment(alignment)
@@ -727,16 +865,31 @@ class VideoOverlayWithSubtitlesNode:
         small_input = ffmpeg.input(small_video_path)
         mask_input = ffmpeg.input(mask_video_path)
 
-        max_dur = max(big_dur, small_dur)
+        max_dur = max(big_dur_adjusted, small_dur_adjusted)
 
         try:
-            if big_dur > small_dur:
+            if big_dur_adjusted > small_dur_adjusted:
                 print(f"[VideoOverlay] 大视频更长，冻结小视频最后一帧")
-                pad_dur = big_dur - small_dur
+                pad_dur = big_dur_adjusted - small_dur_adjusted
+
+                # 应用调速到大视频
+                big_video = big_input.video
+                if big_video_speed != 1.0:
+                    big_video = ffmpeg.filter(big_video, 'setpts', f'{1.0/big_video_speed}*PTS')
+
+                # 应用调速到小视频
+                small_video = small_input.video
+                if small_video_speed != 1.0:
+                    small_video = ffmpeg.filter(small_video, 'setpts', f'{1.0/small_video_speed}*PTS')
+
+                # 应用调速到mask（与小视频同步）
+                mask_video = mask_input.video
+                if small_video_speed != 1.0:
+                    mask_video = ffmpeg.filter(mask_video, 'setpts', f'{1.0/small_video_speed}*PTS')
 
                 # 延长小视频
                 small_padded = ffmpeg.filter(
-                    small_input.video,
+                    small_video,
                     'tpad',
                     stop_mode='clone',
                     stop_duration=pad_dur
@@ -744,7 +897,7 @@ class VideoOverlayWithSubtitlesNode:
 
                 # 延长mask
                 mask_padded = ffmpeg.filter(
-                    mask_input.video,
+                    mask_video,
                     'tpad',
                     stop_mode='clone',
                     stop_duration=pad_dur
@@ -783,16 +936,25 @@ class VideoOverlayWithSubtitlesNode:
 
                 # overlay
                 video_out = ffmpeg.overlay(
-                    big_input.video,
+                    big_video,
                     small_masked,
                     x=overlay_x,
                     y=overlay_y,
                     format='auto'
                 )
 
-                # 音频处理
-                big_audio = ffmpeg.filter(big_input.audio, 'volume', big_video_audio_volume)
-                small_audio = ffmpeg.filter(small_input.audio, 'volume', small_video_audio_volume)
+                # 音频处理：混合两个音频
+                # 大视频音频调速
+                big_audio = big_input.audio
+                if big_video_speed != 1.0:
+                    big_audio = self.apply_audio_speed(big_audio, big_video_speed)
+                big_audio = ffmpeg.filter(big_audio, 'volume', big_video_audio_volume)
+
+                # 小视频音频调速后需要延长（冻结静音）
+                small_audio = small_input.audio
+                if small_video_speed != 1.0:
+                    small_audio = self.apply_audio_speed(small_audio, small_video_speed)
+                small_audio = ffmpeg.filter(small_audio, 'volume', small_video_audio_volume)
                 small_audio_padded = ffmpeg.filter(
                     small_audio,
                     'apad',
@@ -811,21 +973,36 @@ class VideoOverlayWithSubtitlesNode:
             else:
                 print(f"[VideoOverlay] 小视频更长，循环大视频")
 
+                # 应用调速到大视频
+                big_video = big_input.video
+                if big_video_speed != 1.0:
+                    big_video = ffmpeg.filter(big_video, 'setpts', f'{1.0/big_video_speed}*PTS')
+
                 # 循环大视频
                 big_loop = ffmpeg.filter(
-                    big_input.video,
+                    big_video,
                     'loop',
                     loop=-1,
                     size=32767,
                     start=0
                 )
 
+                # 应用调速到小视频
+                small_video = small_input.video
+                if small_video_speed != 1.0:
+                    small_video = ffmpeg.filter(small_video, 'setpts', f'{1.0/small_video_speed}*PTS')
+
+                # 应用调速到mask（与小视频同步）
+                mask_video = mask_input.video
+                if small_video_speed != 1.0:
+                    mask_video = ffmpeg.filter(mask_video, 'setpts', f'{1.0/small_video_speed}*PTS')
+
                 # 处理mask
-                mask_gray = ffmpeg.filter(mask_input.video, 'format', 'gray')
+                mask_gray = ffmpeg.filter(mask_video, 'format', 'gray')
 
                 # 缩放
                 small_scaled = ffmpeg.filter(
-                    small_input.video,
+                    small_video,
                     'scale',
                     target_width,
                     target_height,
@@ -862,15 +1039,24 @@ class VideoOverlayWithSubtitlesNode:
                     format='auto'
                 )
 
-                # 音频处理
+                # 音频处理：混合两个音频
+                # 大视频音频调速后需要循环
+                big_audio = big_input.audio
+                if big_video_speed != 1.0:
+                    big_audio = self.apply_audio_speed(big_audio, big_video_speed)
                 big_audio_loop = ffmpeg.filter(
-                    big_input.audio,
+                    big_audio,
                     'aloop',
                     loop=-1,
-                    size=2e9
+                    size=2e9  # 足够大的采样数
                 )
                 big_audio = ffmpeg.filter(big_audio_loop, 'volume', big_video_audio_volume)
-                small_audio = ffmpeg.filter(small_input.audio, 'volume', small_video_audio_volume)
+
+                # 小视频音频调速
+                small_audio = small_input.audio
+                if small_video_speed != 1.0:
+                    small_audio = self.apply_audio_speed(small_audio, small_video_speed)
+                small_audio = ffmpeg.filter(small_audio, 'volume', small_video_audio_volume)
 
                 if big_video_audio_volume > 0 and small_video_audio_volume > 0:
                     audio_out = ffmpeg.filter([big_audio, small_audio], 'amix', inputs=2, duration='longest')

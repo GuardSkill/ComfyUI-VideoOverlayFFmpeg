@@ -3,6 +3,7 @@
 基于 FFmpeg 的 ComfyUI 画中画合成节点。通过一条节点即可把带有 mask 的小视频叠加到主视频，支持透明度、位置与尺寸调节，并且自动处理不同长度的视频，还能在前端直接预览输出结果。**现已支持智能字幕添加和鼠标悬停播放预览！**
 
 > English summary: Drop-in ComfyUI node that overlays a masked clip on top of a base clip using ffmpeg. It handles alpha masks, size/position, mismatched durations, and ships with a small web extension for instant previews. Now with smart subtitle support and hover-to-play preview!
+![Demo](workflows/infinite_video_blend_add_subtitle.png)
 
 ---
 
@@ -14,6 +15,7 @@
 - 自动输出到 ComfyUI `output` 目录并推送前端预览
 - **⭐ NEW**: 智能字幕添加，支持 Whisper alignment 直接连线，自动文本换行
 - **⭐ NEW**: 鼠标悬停播放预览，参考 VideoHelperSuite 实现
+- **⭐ NEW**: 视频调速功能，支持 0.25x-4x 播放速度（大视频默认1.8x加速，小视频默认1.0x）
 
 ---
 
@@ -50,6 +52,8 @@
 | `size_ratio` | FLOAT | 小视频目标高度 ÷ 主视频高度（默认 0.25） |
 | `big_video_audio_volume` | FLOAT 0~2 | 大视频音量（默认 0.0） |
 | `small_video_audio_volume` | FLOAT 0~2 | 小视频音量（默认 1.0） |
+| `big_video_speed` | FLOAT 0.25~4.0 | 大视频播放速度（默认 1.8x，支持快放/慢放） |
+| `small_video_speed` | FLOAT 0.25~4.0 | 小视频播放速度（默认 1.0x，支持快放/慢放） |
 
 ### 2. VideoOverlayWithSubtitlesNode (增强版) ⭐
 包含所有基础功能 + 字幕支持。
