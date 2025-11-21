@@ -1136,13 +1136,91 @@ class VideoOverlayWithSubtitlesNode:
             raise
 
 
+class Alignment2StringNode:
+    """将 whisper_alignment 转换为字符串"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "alignment": ("whisper_alignment",),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("alignment_string",)
+    FUNCTION = "alignment_to_string"
+    CATEGORY = "whisper"
+
+    def alignment_to_string(self, alignment):
+        """将 alignment 转换为 JSON 字符串"""
+        import json
+
+        if alignment is None:
+            return ("[]",)
+
+        if isinstance(alignment, list):
+            return (json.dumps(alignment, ensure_ascii=False, indent=2),)
+
+        # 如果已经是字符串，直接返回
+        if isinstance(alignment, str):
+            return (alignment,)
+
+        return ("[]",)
+
+
+class String2AlignmentNode:
+    """将字符串转换为 whisper_alignment"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "alignment_string": ("STRING", {
+                    "default": "[]",
+                    "multiline": True,
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("whisper_alignment",)
+    RETURN_NAMES = ("alignment",)
+    FUNCTION = "string_to_alignment"
+    CATEGORY = "whisper"
+
+    def string_to_alignment(self, alignment_string):
+        """将 JSON 字符串转换为 alignment"""
+        import json
+
+        if not alignment_string or alignment_string.strip() == "":
+            return ([],)
+
+        try:
+            alignment = json.loads(alignment_string)
+            if isinstance(alignment, list):
+                return (alignment,)
+            else:
+                print("[String2Alignment] 警告: 解析的结果不是列表，返回空列表")
+                return ([],)
+        except json.JSONDecodeError as e:
+            print(f"[String2Alignment] JSON 解析错误: {e}")
+            return ([],)
+        except Exception as e:
+            print(f"[String2Alignment] 转换失败: {e}")
+            return ([],)
+
+
 # ComfyUI节点注册
 NODE_CLASS_MAPPINGS = {
     "VideoOverlayNode": VideoOverlayNode,
-    "VideoOverlayWithSubtitlesNode": VideoOverlayWithSubtitlesNode
+    "VideoOverlayWithSubtitlesNode": VideoOverlayWithSubtitlesNode,
+    "Alignment2StringNode": Alignment2StringNode,
+    "String2AlignmentNode": String2AlignmentNode
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VideoOverlayNode": "Video Overlay (画中画合成)",
-    "VideoOverlayWithSubtitlesNode": "Video Overlay with Subtitles (画中画+字幕)"
+    "VideoOverlayWithSubtitlesNode": "Video Overlay with Subtitles (画中画+字幕)",
+    "Alignment2StringNode": "Alignment to String (对齐数据转字符串)",
+    "String2AlignmentNode": "String to Alignment (字符串转对齐数据)"
 }
